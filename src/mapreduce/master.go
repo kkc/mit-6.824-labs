@@ -28,22 +28,49 @@ func (mr *MapReduce) KillWorkers() *list.List {
 
 func (mr *MapReduce) RunMaster() *list.List {
 
-	workerDoJob := func(addr string, args *DoJobArgs) {
+	mapChan := make(chan int, mr.nMap)
+	reduceChan := make(chan int, mr.nReduce)
+
+	var workerDoJob = func(worker string, args *DoJobArgs) bool {
 		var reply DoJobReply
-		call(addr, "Worker.DoJob", args, &reply)
-		mr.registerChannel <- addr
+		ok := call(worker, "Worker.DoJob", args, &reply)
+		return ok
 	}
 
 	for i := 0; i < mr.nMap; i++ {
-		args := &DoJobArgs{mr.file, Map, i, mr.nReduce}
-		worker := <-mr.registerChannel
-		go workerDoJob(worker, args)
+		go func(index int) {
+			for {
+				worker := <-mr.registerChannel
+				args := &DoJobArgs{mr.file, Map, index, mr.nReduce}
+				ok := workerDoJob(worker, args)
+				if ok {
+					mapChan <- index
+					mr.registerChannel <- worker
+					return
+				}
+			}
+		}(i)
+	}
+
+	for i := 0; i < mr.nMap; i++ {
+		<-mapChan
 	}
 
 	for i := 0; i < mr.nReduce; i++ {
-		args := &DoJobArgs{mr.file, Reduce, i, mr.nMap}
-		worker := <-mr.registerChannel
-		go workerDoJob(worker, args)
+		go func(index int) {
+			worker := <-mr.registerChannel
+			args := &DoJobArgs{mr.file, Reduce, index, mr.nMap}
+			ok := workerDoJob(worker, args)
+			if ok {
+				reduceChan <- index
+				mr.registerChannel <- worker
+				return
+			}
+		}(i)
+	}
+
+	for i := 0; i < mr.nReduce; i++ {
+		<-reduceChan
 	}
 
 	return mr.KillWorkers()
