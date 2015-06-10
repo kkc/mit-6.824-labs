@@ -5,26 +5,31 @@ import "net/rpc"
 import "fmt"
 
 // You'll probably need to uncomment these:
-// import "time"
-// import "crypto/rand"
-// import "math/big"
+import "time"
 
+import "crypto/rand"
+import "math/big"
 
+func nrand() int64 {
+	max := big.NewInt(int64(1) << 62)
+	bigx, _ := rand.Int(rand.Reader, max)
+	x := bigx.Int64()
+	return x
+}
 
 type Clerk struct {
-  vs *viewservice.Clerk
-  // Your declarations here
+	vs *viewservice.Clerk
+	// Your declarations here
+	view viewservice.View
 }
-
 
 func MakeClerk(vshost string, me string) *Clerk {
-  ck := new(Clerk)
-  ck.vs = viewservice.MakeClerk(me, vshost)
-  // Your ck.* initializations here
+	ck := new(Clerk)
+	ck.vs = viewservice.MakeClerk(me, vshost)
+	// Your ck.* initializations here
 
-  return ck
+	return ck
 }
-
 
 //
 // call() sends an RPC to the rpcname handler on server srv
@@ -43,20 +48,20 @@ func MakeClerk(vshost string, me string) *Clerk {
 // please don't change this function.
 //
 func call(srv string, rpcname string,
-          args interface{}, reply interface{}) bool {
-  c, errx := rpc.Dial("unix", srv)
-  if errx != nil {
-    return false
-  }
-  defer c.Close()
-    
-  err := c.Call(rpcname, args, reply)
-  if err == nil {
-    return true
-  }
+	args interface{}, reply interface{}) bool {
+	c, errx := rpc.Dial("unix", srv)
+	if errx != nil {
+		return false
+	}
+	defer c.Close()
 
-  fmt.Println(err)
-  return false
+	err := c.Call(rpcname, args, reply)
+	if err == nil {
+		return true
+	}
+
+	fmt.Println("RPC", err, rpcname, args, reply)
+	return false
 }
 
 //
@@ -68,9 +73,33 @@ func call(srv string, rpcname string,
 //
 func (ck *Clerk) Get(key string) string {
 
-  // Your code here.
+	if ck.view.Viewnum == 0 {
+		ck.UpdateView()
+	}
 
-  return "???"
+	var reply GetReply
+	args := &GetArgs{key}
+
+	for {
+		fmt.Println("Get args", args, ck.view)
+		ok := call(ck.view.Primary, "PBServer.Get", args, &reply)
+		if ok {
+			fmt.Println("Get result", reply)
+			return reply.Value
+		}
+		ck.UpdateView()
+	}
+
+	return "???"
+}
+
+func (ck *Clerk) UpdateView() {
+	view, err := ck.vs.Ping(ck.view.Viewnum)
+	if err != nil {
+		fmt.Println("update view failed")
+		return
+	}
+	ck.view = view
 }
 
 //
@@ -79,14 +108,33 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
 
-  // Your code here.
-  return "???"
+	if ck.view.Viewnum == 0 {
+		ck.UpdateView()
+	}
+
+	var reply PutReply
+	Xid := nrand()
+	args := &PutArgs{key, value, dohash, Xid}
+
+	fmt.Println("PutExt", ck, args)
+	for {
+		ok := call(ck.view.Primary, "PBServer.Put", args, &reply)
+		fmt.Println("ok:", ok)
+		if ok {
+			return reply.PreviousValue
+		}
+		time.Sleep(viewservice.PingInterval)
+		ck.UpdateView()
+	}
+
+	return "???"
 }
 
 func (ck *Clerk) Put(key string, value string) {
-  ck.PutExt(key, value, false)
+	fmt.Println("Put", key, value)
+	ck.PutExt(key, value, false)
 }
 func (ck *Clerk) PutHash(key string, value string) string {
-  v := ck.PutExt(key, value, true)
-  return v
+	v := ck.PutExt(key, value, true)
+	return v
 }
